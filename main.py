@@ -9,6 +9,8 @@ sdr.sample_rate = 2e6
 sdr.center_freq = 1090e6
 sdr.gain = 'auto'
 
+print(sdr.valid_gains_db)
+
 # ADSB Matched filter preamble
 ADSB_preamble = np.array([1,0,1,0,0,0,0,1,0,1])
 

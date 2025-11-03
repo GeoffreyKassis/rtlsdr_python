@@ -9,14 +9,14 @@ sdr = RtlSdr()
 # Configure device
 sdr.sample_rate = 2e6
 sdr.center_freq = 1090e6
-sdr.gain = 'auto' # Using 'auto' gain
-SAMPLES_PER_READ = 512 * 1024 # Defines the size of the array read
+sdr.gain = 49.6 # Using 'auto' gain
+SAMPLES_PER_READ = 5120 * 1024 # Defines the size of the array read
 
 # Decoding threshold for binary decoding
-DECODE_THRESHOLD = 0.5 
+DECODE_THRESHOLD = 0.1 
 
 # ADSB Matched filter preamble 
-ADSB_preamble = np.array([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+ADSB_preamble = np.array([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 try:
     print(f"Starting single SDR read (Center Freq: {sdr.center_freq/1e6} MHz, Sample Rate: {sdr.sample_rate/1e6} Msps)")
@@ -32,6 +32,7 @@ try:
 
     # 1. Correlation Plot Data
     # Perform the correlation (matched filtering for preamble)
+    # I am definitly not doing this right...
     correlation = sp_signal.correlate(samples_abs, ADSB_preamble, mode='valid')
     max_correlation = np.max(correlation)
     
@@ -47,6 +48,8 @@ try:
     decoded_bits = (samples_abs > DECODE_THRESHOLD).astype(int)
 
     print(f"Read {len(samples_abs)} processed samples. Max Correlation Peak: {max_correlation:.2f}.")
+
+
 
     # --- Plotting Logic: Linking X-Axes ---
     # Create the figure and two subplots, sharing the x-axis (sharex=True)
