@@ -15,8 +15,14 @@ SAMPLES_PER_READ = 5120 * 1024 # Defines the size of the array read
 # Decoding threshold for binary decoding
 DECODE_THRESHOLD = 0.1 
 
-# ADSB Matched filter preamble 
+# New vibe coded method (Zero-Mean)
+# This is a more standard approach for matched filtering
 ADSB_preamble = np.array([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+mean_preamble = np.mean(ADSB_preamble)
+zero_mean_preamble = ADSB_preamble - mean_preamble
+
+# Ok this works way better, I think I understand it.
+# Basically before normailizing any power meant the correlation was high, now its looking for the specific shape of the power
 
 try:
     print(f"Starting single SDR read (Center Freq: {sdr.center_freq/1e6} MHz, Sample Rate: {sdr.sample_rate/1e6} Msps)")
@@ -32,8 +38,9 @@ try:
 
     # 1. Correlation Plot Data
     # Perform the correlation (matched filtering for preamble)
-    # I am definitly not doing this right...
-    correlation = sp_signal.correlate(samples_abs, ADSB_preamble, mode='valid')
+    # Numpy correlation normalizes by default
+    correlation = sp_signal.correlate(samples_abs, zero_mean_preamble, mode='valid')
+    
     max_correlation = np.max(correlation)
     
     # Determine the Y limits for the correlation plot to keep it static
