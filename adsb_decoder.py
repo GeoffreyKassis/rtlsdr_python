@@ -2,6 +2,9 @@ from rtlsdr import RtlSdr
 import numpy as np
 import scipy.signal as sp_signal
 import matplotlib.pyplot as plt # Import for plotting
+import pyModeS as pms
+
+
 
 # --- Configuration ---
 sdr = RtlSdr()
@@ -23,6 +26,40 @@ zero_mean_preamble = ADSB_preamble - mean_preamble
 
 # Ok this works way better, I think I understand it.
 # Basically before normailizing any power meant the correlation was high, now its looking for the specific shape of the power
+
+def list_to_hex(bit_list):
+    """
+    Converts a Python list of 1s and 0s (bits) to a hexadecimal string.
+    
+    The function converts the list's contents into a binary string, then
+    interprets that as an integer, and finally converts the integer to 
+    a hexadecimal string. Leading zeros in the binary representation 
+    (e.g., [0, 0, 1]) are respected when calculating the integer value.
+    
+    Args:
+        bit_list (list): A list containing only 1s and 0s.
+
+    Returns:
+        str: The resulting hexadecimal string. Returns '0' for an empty list.
+    """
+    # 1. Convert the list of integers to a string of '0' and '1'
+    # Example: [1, 0, 1, 1, 0] -> "10110"
+    binary_string = "".join(map(str, bit_list))
+
+    # Handle the case of an empty list
+    if not binary_string:
+        return "0"
+
+    # 2. Convert the binary string to an integer
+    # The '2' indicates that the string is in base 2 (binary)
+    # Example: int("10110", 2) -> 22
+    integer_value = int(binary_string, 2)
+
+    # 3. Convert the integer to a hexadecimal string and remove the '0x' prefix
+    # hex(22) -> '0x16', so [2:] slice removes '0x' -> '16'
+    hex_string = hex(integer_value)[2:]
+
+    return hex_string
 
 def adsb_checksum_check(decoded_bits):
     print(len(decoded_bits))
@@ -86,6 +123,7 @@ def simple_adsb_decoder(samples):
                 data_block = simple_adsb_data_block_decoder(samples_abs[i+16:i+224+16])
                 print(f"Decoded Bits: {data_block}")
                 adsb_checksum_check(data_block)
+                print("PMS CRC", pms.crc(list_to_hex(data_block)))
             else:
                 false_positives += 1
     print(f"Total false positives: {false_positives}")
@@ -134,7 +172,9 @@ try:
     plt.suptitle(f"ADSB Signal Analysis @ 1090 MHz (X-Axes Linked, Y-Axes Static)", fontsize=16)
 
     # Subplot 1 (ax1): Decoded Bits (0 or 1)
-    ax1.plot(samples_abs, alpha=0.8, color='purple', label='Raw Magnitude (I/Q)')
+    # MODIFICATION: Added marker='.' and drawstyle='steps-post'
+    ax1.plot(samples_abs, alpha=0.8, color='purple', label='Raw Magnitude (I/Q)', 
+             linestyle='-', drawstyle='steps-post', markersize=4) 
     ax1.axhline(DECODE_THRESHOLD, color='r', linestyle='--', linewidth=1, label='Decode Threshold')
     
     # >>> MODIFICATION START - Plot indices on ax1
@@ -152,10 +192,9 @@ try:
     ax1.grid(True, axis='y')
     
     # Subplot 2 (ax2): Correlation Graph
-    # Note: Correlation output is shorter than samples_abs by len(zero_mean_preamble) - 1. 
-    # This is handled because we are using 'valid' mode, and the indices are for the raw samples_abs, 
-    # but because the x-axes are linked, the visual placement is correct on the correlation plot.
-    ax2.plot(correlation, color='darkblue', label='Correlation Output')
+    # MODIFICATION: Added marker='.' and reduced linewidth
+    ax2.plot(correlation, color='darkblue', label='Correlation Output', 
+              linestyle='-', linewidth=1, markersize=4)
     ax2.axhline(y=max_correlation, color='r', linestyle='-', linewidth=2, label=f'Max Correlation ({max_correlation:.2f})')
     
     # >>> MODIFICATION START - Plot indices on ax2
