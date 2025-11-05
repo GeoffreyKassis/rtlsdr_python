@@ -61,43 +61,103 @@ def list_to_hex(bit_list):
 
     return hex_string
 
-def adsb_checksum_check(decoded_bits):
-    print(len(decoded_bits))
-    ADSB_GENERATOR = 0b1111111111111010000001001
-    ADSB_GENERATOR = [int(bit) for bit in bin(ADSB_GENERATOR)[2:]]
+def adsb_message_decoder(data_block):
+    """ Decodes a full ADSB message from a bytes.
     
-    for i in range(0, 88):
-        if decoded_bits[i] == 1:
-            for j in range(0, 25):
-                decoded_bits[i + j] = decoded_bits[i + j] ^ ADSB_GENERATOR[j]
+    Args:
+        data_block: bytes array of length 14 (112 bits)
+    Returns:
+        messages: List of ADSB messages as byte arrays
+    """
+    df = data_block[0] >> 3  # Downlink Format is in the first 5 bits
 
-    CRC = decoded_bits[-24:]
+    return 
 
-    if any(CRC):
-        print("Checksum Failed: ", CRC)
+def adsb_checksum_check(payload_bytes: bytes) -> bool:
+    """
+    Checks the 24-bit CRC of a 112-bit ADS-B message.
+    Input is a 14-byte 'bytes' object.
+    This version uses efficient integer-only math.
+    """
+    if len(payload_bytes) != 14:
+        raise ValueError(f"Expected 14 bytes, but got {len(payload_bytes)}")
+
+    # Convert 14-byte (112-bit) message into a single integer
+    message_int = int.from_bytes(payload_bytes, byteorder='big')
+    
+    # 25-bit generator polynomial as an integer
+    ADSB_GENERATOR = 0b1111111111111010000001001
+
+    # This is the "remainder" we will be modifying.
+    remainder = message_int 
+    
+    # We iterate 88 times, for the 88 bits of data
+    for i in range(88):
+        # We check the bit from the left (MSB, bit 111) down to bit 24
+        # (111 - i) will go from 111 down to 24
+        if (remainder & (1 << (111 - i))):
+            # If the bit is set, XOR with the generator
+            # We align the 25-bit generator to the bit we are checking
+            # The shift is (112 - 25 - i) = (87 - i)
+            shift = 87 - i
+            remainder ^= (ADSB_GENERATOR << shift)
+    
+    # After 88 loops, the first 88 bits are zero.
+    # The last 24 bits (bits 23 down to 0) contain the CRC remainder.
+    # If the message was valid, this remainder should be zero.
+    
+    # 0xFFFFFF is the mask for the last 24 bits
+    if (remainder & 0xFFFFFF) == 0:
+        print("--------------Checksum Successful------------")
+        return True
+    else:
+        print(f"Checksum Failed. Remainder: {remainder & 0xFFFFFF:06X}")
         return False
-    print("--------------Checksum Successful------------")
-    return True
 
 def simple_adsb_data_block_decoder(samples_abs):
-    """ Simple ADSB Payload decoder. Input is 224 samples of absolute magnitude."""
-    decoded_bits = []
-    for i in range(0, len(samples_abs), 2):
-        decoded_bits.append(1 if samples_abs[i] > samples_abs[i+1] else 0)
-    return decoded_bits
+    """
+    Simple ADSB Payload decoder.
+    Input is 224 samples of absolute magnitude.
+    Returns the decoded 112 bits as 14 bytes.
+    """
+    # An ADS-B data block is 112 bits (14 bytes), encoded in 224 samples.
+    if len(samples_abs) != 224:
+        raise ValueError(f"Expected 224 samples for a 112-bit block, but got {len(samples_abs)}")
 
-def simple_adsb_decoder(samples):
-    """ Simple premable detector similar to what dump1090 uses"""
+    # 1. Decode all 112 bits into a string representation
+    # We use a list comprehension and then ''.join() for efficiency
+    bit_string = "".join(
+        "1" if samples_abs[i] > samples_abs[i+1] else "0"
+        for i in range(0, 224, 2)
+    )
 
-    SNR_threshold = 4  # SNR threshold. Convert from dB to ratio
+    # 2. Convert the 112-bit string into a single large integer
+    big_int = int(bit_string, 2)
 
-    # Calculate the absolute magnitude of the complex samples (signal envelope)
-    samples_abs = np.abs(samples)
+    # 3. Convert the integer into a 14-byte object (112 bits = 14 bytes)
+    # 'big' byteorder means the most significant bit (bit_string[0])
+    # becomes the most significant bit of the first byte.
+    return big_int.to_bytes(14, byteorder='big')
 
+def simple_adsb_decoder(samples_abs : np.array, SNR_threshold: int = 4):
+    """Simple ADSB Decoder 
+    
+    Inspiried by dump1090
+    1) Scan for preamble pattern in the magnitude samples
+    2) Check SNR of premable
+    3) If preamble detected, decode the next 224 samples as ADSB message
+    4) Check checksum of decoded message
+
+    Args:
+        samples_abs: numpy array of samples from SDR (magnitude)
+        SNR_threshold: SNR threshold for preamble detection, default 4
+    Returns:
+        messages: List of ADSB messages as byte arrays
+    """
     # Test variable for amount of false positives
     false_positives = 0
     positives = 0
-    indices = []
+    messages = []
     for i in range(samples_abs.size - 10):
         # Check for basic preamble pattern. This uses relative power levels pretty cool
         if (samples_abs[i+0] > samples_abs[i+1] and
@@ -119,16 +179,14 @@ def simple_adsb_decoder(samples):
             if  SNR > SNR_threshold:
                 print(f"Preamble detected at index {i} with SNR: {SNR:.2f}")
                 positives += 1
-                indices.append(i)
                 data_block = simple_adsb_data_block_decoder(samples_abs[i+16:i+224+16])
-                print(f"Decoded Bits: {data_block}")
-                adsb_checksum_check(data_block)
-                print("PMS CRC", pms.crc(list_to_hex(data_block)))
+                if adsb_checksum_check(data_block):
+                    messages.append(data_block)
             else:
                 false_positives += 1
     print(f"Total false positives: {false_positives}")
     print(f"Total positive rate: {(positives/false_positives)*100}%")
-    return indices
+    return messages
 
 try:
     print(f"Starting single SDR read (Center Freq: {sdr.center_freq/1e6} MHz, Sample Rate: {sdr.sample_rate/1e6} Msps)")
@@ -139,10 +197,13 @@ try:
     SAMPLES_TO_SKIP = 2000
     samples = samples[SAMPLES_TO_SKIP:]
 
-    indicies = simple_adsb_decoder(samples)
 
     # Calculate the absolute magnitude of the complex samples (signal envelope)
     samples_abs = np.abs(samples)
+
+    messages = simple_adsb_decoder(samples_abs)
+    
+    indicies = []
 
     # 1. Correlation Plot Data
     # Perform the correlation (matched filtering for preamble)
@@ -161,7 +222,6 @@ try:
     # 2. Bit Decode Plot Data (Highly simplified: just checks if magnitude is above threshold)
     # Convert samples_abs to 0 or 1 based on the simple threshold
     decoded_bits = (samples_abs > DECODE_THRESHOLD).astype(int)
-
     print(f"Read {len(samples_abs)} processed samples. Max Correlation Peak: {max_correlation:.2f}.")
 
 
