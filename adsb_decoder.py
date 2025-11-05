@@ -68,7 +68,7 @@ def adsb_checksum_check(decoded_bits):
     
     for i in range(0, 88):
         if decoded_bits[i] == 1:
-            for j in range(0, 24):
+            for j in range(0, 25):
                 decoded_bits[i + j] = decoded_bits[i + j] ^ ADSB_GENERATOR[j]
 
     CRC = decoded_bits[-24:]
