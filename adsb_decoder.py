@@ -13,7 +13,7 @@ sdr = RtlSdr()
 sdr.sample_rate = 2e6
 sdr.center_freq = 1090e6
 sdr.gain = 49.6 # Using 'auto' gain
-SAMPLES_PER_READ = 5120 * 1024 # Defines the size of the array read
+SAMPLES_PER_READ = 512 * 1024 # Defines the size of the array read
 
 # Decoding threshold for binary decoding
 DECODE_THRESHOLD = 0.1 
@@ -27,39 +27,9 @@ zero_mean_preamble = ADSB_preamble - mean_preamble
 # Ok this works way better, I think I understand it.
 # Basically before normailizing any power meant the correlation was high, now its looking for the specific shape of the power
 
-def list_to_hex(bit_list):
-    """
-    Converts a Python list of 1s and 0s (bits) to a hexadecimal string.
-    
-    The function converts the list's contents into a binary string, then
-    interprets that as an integer, and finally converts the integer to 
-    a hexadecimal string. Leading zeros in the binary representation 
-    (e.g., [0, 0, 1]) are respected when calculating the integer value.
-    
-    Args:
-        bit_list (list): A list containing only 1s and 0s.
-
-    Returns:
-        str: The resulting hexadecimal string. Returns '0' for an empty list.
-    """
-    # 1. Convert the list of integers to a string of '0' and '1'
-    # Example: [1, 0, 1, 1, 0] -> "10110"
-    binary_string = "".join(map(str, bit_list))
-
-    # Handle the case of an empty list
-    if not binary_string:
-        return "0"
-
-    # 2. Convert the binary string to an integer
-    # The '2' indicates that the string is in base 2 (binary)
-    # Example: int("10110", 2) -> 22
-    integer_value = int(binary_string, 2)
-
-    # 3. Convert the integer to a hexadecimal string and remove the '0x' prefix
-    # hex(22) -> '0x16', so [2:] slice removes '0x' -> '16'
-    hex_string = hex(integer_value)[2:]
-
-    return hex_string
+# Reference Position
+REF_LAT = 40.936709
+REF_LON = -73.97187
 
 def adsb_message_decoder(data_block):
     """ Decodes a full ADSB message from a bytes.
@@ -67,11 +37,108 @@ def adsb_message_decoder(data_block):
     Args:
         data_block: bytes array of length 14 (112 bits)
     Returns:
-        messages: List of ADSB messages as byte arrays
+        ADSB: Dict containing decoded fields
     """
-    df = data_block[0] >> 3  # Downlink Format is in the first 5 bits
+    DATA_string = data_block.hex()
+    
+    DF = data_block[0] >> 3
+    CA = data_block[0] & 0x07
+    ICAO = data_block[1:4]
+    ME = data_block[4:12]
+    TC = (ME[0] >> 3) & 0x1F
+    PI = data_block[12:14]
 
-    return 
+    print(f"Decoded ADSB Message: DF={DF}, CA={CA}, ICAO={ICAO.hex().upper()}, TC={TC}")
+
+
+    if TC >= 1 and TC <= 4:
+        # Aircraft Identification
+        callsign = pms.adsb.callsign(DATA_string)
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Callsign": callsign
+        }
+    elif TC >= 5 and TC <= 8:
+        # Surface Position
+        altitude = pms.adsb.altitude(DATA_string)
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Altitude": altitude
+        }
+    elif TC >= 9 and TC <= 18:
+        # Airborne Position (w/Baro Altitude)
+        altitude = pms.adsb.altitude(DATA_string)
+        lat, lon = pms.adsb.position_with_ref(DATA_string, REF_LAT, REF_LON)  # No reference position
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Altitude": altitude,
+            "Latitude": lat,
+            "Longitude": lon
+        }
+    elif TC == 19:
+        # Airborne Velocity
+        speed, heading, vertical_rate, speed_type = pms.adsb.velocity(DATA_string)
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Speed": speed,
+            "Heading": heading,
+            "VerticalRate": vertical_rate
+        }
+    elif TC >= 20 and TC <= 22:
+        # Airborne Position (w/GPS Altitude)
+        altitude = pms.adsb.altitude(DATA_string)
+        lat, lon = pms.adsb.position_with_ref(DATA_string, REF_LAT, REF_LON)  # No reference position
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Altitude": altitude,
+            "Latitude": lat,
+            "Longitude": lon
+        }
+    elif TC >= 23 and TC <= 27:
+        # Reserved for future use
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Info": "Reserved for future use"
+        }
+    elif TC == 28:
+        # Comm-B Altitude Reply
+        altitude = pms.adsb.altitude(DATA_string)
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Altitude": altitude
+        }
+    elif TC == 29:
+        # Target state and status information
+        return {
+            "DF": DF,
+            "CA": CA,
+            "ICAO": ICAO.hex().upper(),
+            "TypeCode": TC,
+            "Info": "Target state and status information"
+        }
+    else:
+        return 
 
 def adsb_checksum_check(payload_bytes: bytes) -> bool:
     """
@@ -190,94 +257,80 @@ def simple_adsb_decoder(samples_abs : np.array, SNR_threshold: int = 4):
 
 try:
     print(f"Starting single SDR read (Center Freq: {sdr.center_freq/1e6} MHz, Sample Rate: {sdr.sample_rate/1e6} Msps)")
+    while True:
+        samples = sdr.read_samples(SAMPLES_PER_READ)
+        SAMPLES_TO_SKIP = 2000
+        samples = samples[SAMPLES_TO_SKIP:]
+        samples_abs = np.abs(samples)
 
-    # Read complex samples from the SDR
-    samples = sdr.read_samples(SAMPLES_PER_READ)
+        # UPDATED: Now simple_adsb_decoder returns the list of objects AND the indices
+        # messages is a list of ADSBMessage objects
+        messages = simple_adsb_decoder(samples_abs) 
+        
+        print("\n--- Summary of Decoded Messages ---")
+        for msg in messages:
+            print(adsb_message_decoder(msg))
 
-    SAMPLES_TO_SKIP = 2000
-    samples = samples[SAMPLES_TO_SKIP:]
+
+#     # 2. Bit Decode Plot Data (Highly simplified: just checks if magnitude is above threshold)
+#     decoded_bits = (samples_abs > DECODE_THRESHOLD).astype(int)
+#     print(f"Read {len(samples_abs)} processed samples. Max Correlation Peak: {max_correlation:.2f}.")
 
 
-    # Calculate the absolute magnitude of the complex samples (signal envelope)
-    samples_abs = np.abs(samples)
+# # --- Plotting Logic: Linking X-Axes ---
+#     # Create the figure and two subplots, sharing the x-axis (sharex=True)
+#     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+#     plt.suptitle(f"ADSB Signal Analysis @ 1090 MHz (Total Valid Messages: {len(messages)})", fontsize=16)
 
-    messages = simple_adsb_decoder(samples_abs)
+#     # Subplot 1 (ax1): Decoded Bits (0 or 1)
+#     ax1.plot(samples_abs, alpha=0.8, color='purple', label='Raw Magnitude (I/Q)', 
+#              linestyle='-', drawstyle='steps-post', markersize=4) 
+#     ax1.axhline(DECODE_THRESHOLD, color='r', linestyle='--', linewidth=1, label='Decode Threshold')
     
-    indicies = []
+#     # Plot vertical lines for detected indices on the magnitude plot (ax1)
+#     for i in indicies:
+#         label = 'Preamble Detected' if i == indicies[0] else None 
+#         ax1.axvline(x=i, color='darkorange', linestyle='-', linewidth=1.5, label=label, alpha=0.7)
 
-    # 1. Correlation Plot Data
-    # Perform the correlation (matched filtering for preamble)
-    # Numpy correlation normalizes by default
-    correlation = sp_signal.correlate(samples_abs, zero_mean_preamble, mode='valid')
+#     ax1.set_title(f'Simplified Binary Decoding ({len(samples_abs)} Total Samples)')
+#     ax1.set_ylabel('Magnitude / Decoded Value')
+#     ax1.set_ylim(-0.1, 1.5)
+#     ax1.legend(loc='upper right')
+#     ax1.grid(True, axis='y')
     
-    max_correlation = np.max(correlation)
+#     # Subplot 2 (ax2): Correlation Graph
+#     correlation = sp_signal.correlate(samples_abs, zero_mean_preamble, mode='valid')
+#     max_correlation = np.max(correlation)
+#     corr_min = np.min(correlation)
+#     corr_max = np.max(correlation)
+#     y2_min = corr_min * 0.95 if corr_min < 0 else corr_min * 0.95
+#     y2_max = corr_max * 1.05
+
+#     ax2.plot(correlation, color='darkblue', label='Correlation Output', 
+#              linestyle='-', linewidth=1, markersize=4)
+#     ax2.axhline(y=max_correlation, color='r', linestyle='-', linewidth=2, label=f'Max Correlation ({max_correlation:.2f})')
     
-    # Determine the Y limits for the correlation plot to keep it static
-    corr_min = np.min(correlation)
-    corr_max = np.max(correlation)
-    # Add a 5% buffer above and below the min/max values
-    y2_min = corr_min * 0.95 if corr_min < 0 else corr_min * 0.95
-    y2_max = corr_max * 1.05
+#     # Plot vertical lines for detected indices on the correlation plot (ax2)
+#     for i in indicies:
+#         label = 'Preamble Detected' if i == indicies[0] else None 
+#         ax2.axvline(x=i, color='darkorange', linestyle='-', linewidth=1.5, label=label, alpha=0.7)
 
-    # 2. Bit Decode Plot Data (Highly simplified: just checks if magnitude is above threshold)
-    # Convert samples_abs to 0 or 1 based on the simple threshold
-    decoded_bits = (samples_abs > DECODE_THRESHOLD).astype(int)
-    print(f"Read {len(samples_abs)} processed samples. Max Correlation Peak: {max_correlation:.2f}.")
-
-
-
-# --- Plotting Logic: Linking X-Axes ---
-    # Create the figure and two subplots, sharing the x-axis (sharex=True)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
-    plt.suptitle(f"ADSB Signal Analysis @ 1090 MHz (X-Axes Linked, Y-Axes Static)", fontsize=16)
-
-    # Subplot 1 (ax1): Decoded Bits (0 or 1)
-    # MODIFICATION: Added marker='.' and drawstyle='steps-post'
-    ax1.plot(samples_abs, alpha=0.8, color='purple', label='Raw Magnitude (I/Q)', 
-             linestyle='-', drawstyle='steps-post', markersize=4) 
-    ax1.axhline(DECODE_THRESHOLD, color='r', linestyle='--', linewidth=1, label='Decode Threshold')
+#     ax2.set_title('Correlation of Signal Magnitude with ADSB Preamble')
+#     ax2.set_xlabel('Sample Index / Correlation Lag (Linked)')
+#     ax2.set_ylabel('Correlation Value')
+#     ax2.set_ylim(y2_min, y2_max)
+#     ax2.legend(loc='upper right')
+#     ax2.grid(True)
     
-    # >>> MODIFICATION START - Plot indices on ax1
-    # Plot vertical lines for detected indices on the magnitude plot (ax1)
-    for i in indicies:
-        # The first one is labeled, the rest are not to avoid clutter in the legend
-        label = 'Preamble Detected' if i == indicies[0] else None 
-        ax1.axvline(x=i, color='darkorange', linestyle='-', linewidth=1.5, label=label, alpha=0.7)
-    # >>> MODIFICATION END
-
-    ax1.set_title(f'Simplified Binary Decoding ({len(decoded_bits)} Total Samples)')
-    ax1.set_ylabel('Magnitude / Decoded Value')
-    ax1.set_ylim(-0.1, 1.5) # Fixed Y-limits for decoding plot
-    ax1.legend(loc='upper right')
-    ax1.grid(True, axis='y')
-    
-    # Subplot 2 (ax2): Correlation Graph
-    # MODIFICATION: Added marker='.' and reduced linewidth
-    ax2.plot(correlation, color='darkblue', label='Correlation Output', 
-              linestyle='-', linewidth=1, markersize=4)
-    ax2.axhline(y=max_correlation, color='r', linestyle='-', linewidth=2, label=f'Max Correlation ({max_correlation:.2f})')
-    
-    # >>> MODIFICATION START - Plot indices on ax2
-    # Plot vertical lines for detected indices on the correlation plot (ax2)
-    for i in indicies:
-        # The first one is labeled, the rest are not to avoid clutter in the legend
-        label = 'Preamble Detected' if i == indicies[0] else None 
-        ax2.axvline(x=i, color='darkorange', linestyle='-', linewidth=1.5, label=label, alpha=0.7)
-    # >>> MODIFICATION END
-
-    ax2.set_title('Correlation of Signal Magnitude with ADSB Preamble')
-    ax2.set_xlabel('Sample Index / Correlation Lag (Linked)')
-    ax2.set_ylabel('Correlation Value')
-    ax2.set_ylim(y2_min, y2_max) # Fixed Y-limits for correlation plot
-    ax2.legend(loc='upper right')
-    ax2.grid(True)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout
-    plt.show() # Display the plots
+#     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+#     plt.show()
 
 except Exception as e:
+    # Use standard error logging
     raise e
     print(f"An error occurred: {e}")
+    # Re-raise the exception if you want the program to halt with a stack trace
+    # raise 
 finally:
     # Always close the SDR device when done
     print("Closing SDR device.")
