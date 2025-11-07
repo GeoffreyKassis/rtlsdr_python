@@ -3,20 +3,7 @@ import numpy as np
 import scipy.signal as sp_signal
 import matplotlib.pyplot as plt # Import for plotting
 import pyModeS as pms
-
-
-
-# --- Configuration ---
-sdr = RtlSdr()
-
-# Configure device
-sdr.sample_rate = 2e6
-sdr.center_freq = 1090e6
-sdr.gain = 49.6 # Using 'auto' gain
-SAMPLES_PER_READ = 512 * 1024 # Defines the size of the array read
-
-# Decoding threshold for binary decoding
-DECODE_THRESHOLD = 0.1 
+import asyncio
 
 # New vibe coded method (Zero-Mean)
 # This is a more standard approach for matched filtering
@@ -118,16 +105,16 @@ def adsb_message_decoder(data_block):
             "TypeCode": TC,
             "Info": "Reserved for future use"
         }
-    elif TC == 28:
-        # Comm-B Altitude Reply
-        altitude = pms.adsb.altitude(DATA_string)
-        return {
-            "DF": DF,
-            "CA": CA,
-            "ICAO": ICAO.hex().upper(),
-            "TypeCode": TC,
-            "Altitude": altitude
-        }
+    # elif TC == 28:
+    #     # Comm-B Altitude Reply
+    #     altitude = pms.adsb.altitude(DATA_string)
+    #     return {
+    #         "DF": DF,
+    #         "CA": CA,
+    #         "ICAO": ICAO.hex().upper(),
+    #         "TypeCode": TC,
+    #         "Altitude": altitude
+    #     }
     elif TC == 29:
         # Target state and status information
         return {
@@ -255,22 +242,32 @@ def simple_adsb_decoder(samples_abs : np.array, SNR_threshold: int = 4):
     print(f"Total positive rate: {(positives/false_positives)*100}%")
     return messages
 
-try:
-    print(f"Starting single SDR read (Center Freq: {sdr.center_freq/1e6} MHz, Sample Rate: {sdr.sample_rate/1e6} Msps)")
-    while True:
-        samples = sdr.read_samples(SAMPLES_PER_READ)
-        SAMPLES_TO_SKIP = 2000
-        samples = samples[SAMPLES_TO_SKIP:]
-        samples_abs = np.abs(samples)
+async def streaming():
+    sdr = RtlSdr()
 
-        # UPDATED: Now simple_adsb_decoder returns the list of objects AND the indices
-        # messages is a list of ADSBMessage objects
-        messages = simple_adsb_decoder(samples_abs) 
-        
-        print("\n--- Summary of Decoded Messages ---")
-        for msg in messages:
-            print(adsb_message_decoder(msg))
+    # Configure for ADS-B
+    sdr.sample_rate = 2_000_000
+    sdr.center_freq = 1090_000_000
+    sdr.gain = 49.6
 
+    print("Starting ADS-B stream...")
+
+    try:
+        async for samples in sdr.stream(num_samples_or_bytes=512*1024):
+            samples_abs = np.abs(samples)
+            messages = simple_adsb_decoder(samples_abs)
+            print(f"Decoded {len(messages)} messages in current batch.")
+            for msg in messages:
+                print(adsb_message_decoder(msg))
+
+    except KeyboardInterrupt:
+        print("\nStopping...")
+    finally:
+        await sdr.stop()
+        sdr.close()
+
+if __name__ == "__main__":
+    asyncio.run(streaming())
 
 #     # 2. Bit Decode Plot Data (Highly simplified: just checks if magnitude is above threshold)
 #     decoded_bits = (samples_abs > DECODE_THRESHOLD).astype(int)
@@ -325,13 +322,13 @@ try:
 #     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 #     plt.show()
 
-except Exception as e:
-    # Use standard error logging
-    raise e
-    print(f"An error occurred: {e}")
-    # Re-raise the exception if you want the program to halt with a stack trace
-    # raise 
-finally:
-    # Always close the SDR device when done
-    print("Closing SDR device.")
-    sdr.close()
+# except Exception as e:
+#     # Use standard error logging
+#     raise e
+#     print(f"An error occurred: {e}")
+#     # Re-raise the exception if you want the program to halt with a stack trace
+#     # raise 
+# finally:
+#     # Always close the SDR device when done
+#     print("Closing SDR device.")
+#     sdr.close()
