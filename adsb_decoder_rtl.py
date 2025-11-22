@@ -4,6 +4,7 @@ import scipy.signal as sp_signal
 import matplotlib.pyplot as plt # Import for plotting
 import pyModeS as pms
 import asyncio
+import adi
 
 # New vibe coded method (Zero-Mean)
 # This is a more standard approach for matched filtering
