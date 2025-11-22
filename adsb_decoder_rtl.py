@@ -4,6 +4,7 @@ import scipy.signal as sp_signal
 import matplotlib.pyplot as plt # Import for plotting
 import pyModeS as pms
 import asyncio
+import adi
 
 # New vibe coded method (Zero-Mean)
 # This is a more standard approach for matched filtering
@@ -165,7 +166,7 @@ def adsb_checksum_check(payload_bytes: bytes) -> bool:
         print("--------------Checksum Successful------------")
         return True
     else:
-        print(f"Checksum Failed. Remainder: {remainder & 0xFFFFFF:06X}")
+        # print(f"Checksum Failed. Remainder: {remainder & 0xFFFFFF:06X}")
         return False
 
 def simple_adsb_data_block_decoder(samples_abs):
@@ -238,8 +239,70 @@ def simple_adsb_decoder(samples_abs : np.array, SNR_threshold: int = 4):
                     messages.append(data_block)
             else:
                 false_positives += 1
-    print(f"Total false positives: {false_positives}")
-    print(f"Total positive rate: {(positives/false_positives)*100}%")
+    # print(f"Total false positives: {false_positives}")
+    # print(f"Total positive rate: {(positives/false_positives)*100}%")
+    return messages
+
+def advanced_adsb_decoder(samples_abs : np.array, SNR_threshold: int = 4):
+    """Simple ADSB Decoder 
+    
+    Inspiried by dump1090
+    1) Scan for preamble pattern in the magnitude samples
+    2) Check SNR of premable
+    3) If preamble detected, decode the next 224 samples as ADSB message
+    4) Check checksum of decoded message
+
+    Args:
+        samples_abs: numpy array of samples from SDR (magnitude)
+        SNR_threshold: SNR threshold for preamble detection, default 4
+    Returns:
+        messages: List of ADSB messages as byte arrays
+    """
+    # Test variable for amount of false positives
+    false_positives = 0
+    positives = 0
+    messages = []
+    for i in range(samples_abs.size - 10):
+        # Check for basic preamble pattern. This uses relative power levels pretty cool
+        if (samples_abs[i+0] > samples_abs[i+1] and
+            samples_abs[i+1] < samples_abs[i+2] and
+            samples_abs[i+2] > samples_abs[i+3] and
+            samples_abs[i+3] < samples_abs[i+0] and
+            samples_abs[i+4] < samples_abs[i+0] and
+            samples_abs[i+5] < samples_abs[i+0] and
+            samples_abs[i+6] < samples_abs[i+0] and
+            samples_abs[i+7] > samples_abs[i+8] and
+            samples_abs[i+8] < samples_abs[i+9] and
+            samples_abs[i+9] > samples_abs[i+6]):
+            
+            # Now check that the low bits are significantly lower than the high bits
+            high_avg = (samples_abs[i+0] + samples_abs[i+2] + samples_abs[i+7] + samples_abs[i+9]) / 4
+            low_avg = (samples_abs[i+1] + samples_abs[i+3] + samples_abs[i+4] + samples_abs[i+5] + samples_abs[i+6] + samples_abs[i+8]) / 6
+            # Calculate SNR
+            SNR = high_avg / (low_avg + 1e-10)  # Avoid division by zero
+            if  SNR > SNR_threshold:
+                print(f"Preamble detected at index {i} with SNR: {SNR:.2f}")
+                positives += 1
+                data_block = simple_adsb_data_block_decoder(samples_abs[i+16:i+224+16])
+                if adsb_checksum_check(data_block):
+                    messages.append(data_block)
+                else:
+                    print('Checksum failed, trying bitflip correction...')
+                    for bit_pos in range(112):
+                        # Flip the bit at position bit_pos
+                        byte_index = bit_pos // 8
+                        bit_index = 7 - (bit_pos % 8)  # MSB first
+                        modified_block = bytearray(data_block)
+                        modified_block[byte_index] ^= (1 << bit_index)
+                        if adsb_checksum_check(bytes(modified_block)):
+                            print(f'++++++++++Bitflip correction successful at bit position {bit_pos}.++++++++++')
+                            messages.append(bytes(modified_block))
+                            break
+                    print('Bitflip correction failed for all bits.')
+            else:
+                false_positives += 1
+    # print(f"Total false positives: {false_positives}")
+    # print(f"Total positive rate: {(positives/false_positives)*100}%")
     return messages
 
 async def streaming():
@@ -255,7 +318,7 @@ async def streaming():
     try:
         async for samples in sdr.stream(num_samples_or_bytes=512*1024):
             samples_abs = np.abs(samples)
-            messages = simple_adsb_decoder(samples_abs)
+            messages = advanced_adsb_decoder(samples_abs)
             print(f"Decoded {len(messages)} messages in current batch.")
             for msg in messages:
                 print(adsb_message_decoder(msg))
